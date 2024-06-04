@@ -1,0 +1,122 @@
+import time
+import serial
+import espnow
+
+# Right motor
+enable_right_motor = 22
+right_motor_pin1 = 16
+right_motor_pin2 = 17
+
+# Left motor
+enable_left_motor = 23
+left_motor_pin1 = 18
+left_motor_pin2 = 19
+
+MAX_MOTOR_SPEED = 200
+
+PWM_FREQ = 1000  # 1 KHz
+PWM_RESOLUTION = 8
+right_motor_pwm_speed_channel = 4
+left_motor_pwm_speed_channel = 5
+
+SIGNAL_TIMEOUT = 1000  # This is signal timeout in milli seconds. We will reset the data if no signal
+last_recv_time = 0
+
+class PacketData:
+    def __init__(self):
+        self.x_axis_value = 0
+        self.y_axis_value = 0
+        self.switch_pressed = False
+
+receiver_data = PacketData()
+
+throttle_and_steering_mode = False
+
+def on_data_recv(mac, incoming_data):
+    global receiver_data, throttle_and_steering_mode, last_recv_time
+    if len(incoming_data) == 0:
+        return
+    receiver_data.x_axis_value = incoming_data[0]
+    receiver_data.y_axis_value = incoming_data[1]
+    receiver_data.switch_pressed = incoming_data[2]
+    print(f"values {receiver_data.x_axis_value} {receiver_data.y_axis_value} {receiver_data.switch_pressed}")
+    if receiver_data.switch_pressed:
+        throttle_and_steering_mode = not throttle_and_steering_mode
+    if throttle_and_steering_mode:
+        throttle_and_steering_movements()
+    else:
+        simple_movements()
+    last_recv_time = time.time() * 1000
+
+def simple_movements():
+    if receiver_data.y_axis_value <= 75:  # Move car Forward
+        rotate_motor(MAX_MOTOR_SPEED, MAX_MOTOR_SPEED)
+    elif receiver_data.y_axis_value >= 175:  # Move car Backward
+        rotate_motor(-MAX_MOTOR_SPEED, -MAX_MOTOR_SPEED)
+    elif receiver_data.x_axis_value >= 175:  # Move car Right
+        rotate_motor(-MAX_MOTOR_SPEED, MAX_MOTOR_SPEED)
+    elif receiver_data.x_axis_value <= 75:  # Move car Left
+        rotate_motor(MAX_MOTOR_SPEED, -MAX_MOTOR_SPEED)
+    else:  # Stop the car
+        rotate_motor(0, 0)
+
+def throttle_and_steering_movements():
+    throttle = int(map(receiver_data.y_axis_value, 254, 0, -255, 255))
+    steering = int(map(receiver_data.x_axis_value, 0, 254, -255, 255))
+    motor_direction = 1
+    if throttle < 0:  # Move car backward
+        motor_direction = -1
+    right_motor_speed = abs(throttle) - steering
+    left_motor_speed = abs(throttle) + steering
+    right_motor_speed = constrain(right_motor_speed, 0, 255)
+    left_motor_speed = constrain(left_motor_speed, 0, 255)
+    rotate_motor(right_motor_speed * motor_direction, left_motor_speed * motor_direction)
+
+def rotate_motor(right_motor_speed, left_motor_speed):
+    if right_motor_speed < 0:
+        digitalWrite(right_motor_pin1, LOW)
+        digitalWrite(right_motor_pin2, HIGH)
+    elif right_motor_speed > 0:
+        digitalWrite(right_motor_pin1, HIGH)
+        digitalWrite(right_motor_pin2, LOW)
+    else:
+        digitalWrite(right_motor_pin1, LOW)
+        digitalWrite(right_motor_pin2, LOW)
+
+    if left_motor_speed < 0:
+        digitalWrite(left_motor_pin1, LOW)
+        digitalWrite(left_motor_pin2, HIGH)
+    elif left_motor_speed > 0:
+        digitalWrite(left_motor_pin1, HIGH)
+        digitalWrite(left_motor_pin2, LOW)
+    else:
+        digitalWrite(left_motor_pin1, LOW)
+        digitalWrite(left_motor_pin2, LOW)
+
+    ledc_write(right_motor_pwm_speed_channel, abs(right_motor_speed))
+    ledc_write(left_motor_pwm_speed_channel, abs(left_motor_speed))
+
+def set_up_pin_modes():
+    pinMode(enable_right_motor, OUTPUT)
+    pinMode(right_motor_pin1, OUTPUT)
+    pinMode(right_motor_pin2, OUTPUT)
+
+    pinMode(enable_left_motor, OUTPUT)
+    pinMode(left_motor_pin1, OUTPUT)
+    pinMode(left_motor_pin2, OUTPUT)
+
+    # Set up PWM for motor speed
+    ledc_setup(right_motor_pwm_speed_channel, PWM_FREQ, PWM_RESOLUTION)
+    ledc_setup(left_motor_pwm_speed_channel, PWM_FREQ, PWM_RESOLUTION)
+    ledc_attach_pin(enable_right_motor, right_motor_pwm_speed_channel)
+    ledc_attach_pin(enable_left_motor, left_motor_pwm_speed_channel)
+
+    rotate_motor(0, 0)
+
+def setup():
+    set_up_pin_modes()
+    serial.begin(115200)
+    espnow.init()
+    espnow.register_recv_cb(on_data_recv)
+
+def loop():
