@@ -1,0 +1,77 @@
+import time
+import espnow
+import machine
+
+X_AXIS_PIN = 32
+Y_AXIS_PIN = 33
+SWITCH_PIN = 25
+
+receiver_mac_address = bytes([0xAC, 0x67, 0xB2, 0x36, 0x7F, 0x28])
+
+class PacketData:
+    def __init__(self):
+        self.x_axis_value = 0
+        self.y_axis_value = 0
+        self.switch_pressed = False
+
+data = PacketData()
+
+def map_and_adjust_joystick_dead_band_values(value, reverse):
+    if value >= 2200:
+        value = int(map(value, 2200, 4095, 127, 254))
+    elif value <= 1800:
+        value = int(map(value, 1800, 0, 127, 0))
+    else:
+        value = 127
+
+    if reverse:
+        value = 254 - value
+    return value
+
+def on_data_sent(mac_addr, status):
+    print(f"Last Packet Send Status: {status}")
+    print("Message sent" if status == espnow.SEND_SUCCESS else "Message failed")
+
+def setup():
+    print("Initializing ESP-NOW...")
+    if espnow.init() != espnow.OK:
+        print("Error initializing ESP-NOW")
+        return
+    print("Success: Initialized ESP-NOW")
+
+    espnow.register_send_cb(on_data_sent)
+
+    peer_info = espnow.PeerInfo()
+    peer_info.peer_addr = receiver_mac_address
+    peer_info.channel = 0
+    peer_info.encrypt = False
+
+    if espnow.add_peer(peer_info) != espnow.OK:
+        print("Failed to add peer")
+        return
+    print("Success: Added peer")
+
+    machine.Pin(SWITCH_PIN, machine.Pin.IN, machine.Pin.PULL_UP)
+
+def loop():
+    data.x_axis_value = map_and_adjust_joystick_dead_band_values(machine.ADC(X_AXIS_PIN).read(), False)
+    data.y_axis_value = map_and_adjust_joystick_dead_band_values(machine.ADC(Y_AXIS_PIN).read(), False)
+    data.switch_pressed = False
+
+    if machine.Pin(SWITCH_PIN).value() == 0:
+        data.switch_pressed = True
+
+    result = espnow.send(receiver_mac_address, bytes(data))
+    if result == espnow.OK:
+        print("Sent with success")
+    else:
+        print("Error sending the data")
+
+    if data.switch_pressed:
+        time.sleep(0.5)
+    else:
+        time.sleep(0.05)
+
+setup()
+while True:
+    loop()
